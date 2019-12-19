@@ -86,21 +86,27 @@ mod test {
         let handle = rt.handle().clone();
 
         rt.block_on(async {
-            let local = "hello_world";
+            {
+                let local = String::from("hello_world");
+                let local = &local;
 
-            scope(handle, |scope| {
-                async move {
-                    scope.spawn(async {
-                        delay_for(Duration::from_millis(200)).await;
-                        println!("spanwed task is done: {}", local);
-                    });
-                    delay_for(Duration::from_millis(100)).await;
-                    println!("main task is done: {}", local);
-                }
-            })
-            .await;
-
-            println!("local can be used here: {}", local);
+                let mut f = Box::pin(scope(handle, |scope| {
+                    async move {
+                        scope.spawn(async {
+                            delay_for(Duration::from_millis(500)).await;
+                            println!("spanwed task is done: {}", local);
+                        });
+                        delay_for(Duration::from_millis(100)).await;
+                        println!("main task is done: {}", local);
+                    }
+                }));
+                println!("{:?}", futures::poll!(f.as_mut()));
+                delay_for(Duration::from_millis(110)).await;
+                std::mem::forget(f);
+                println!("local can be used here: {}", local);
+            }
+            println!("local is freed");
+            delay_for(Duration::from_millis(600)).await;
         });
     }
 }
