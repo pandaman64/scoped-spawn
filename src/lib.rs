@@ -100,18 +100,23 @@ mod test {
         rt.block_on(async {
             {
                 let local = String::from("hello_world");
+                let local = &local;
 
                 scope!(handle, |scope| {
-                    let local = &local;
-
                     // TODO: removing this `move` result in an error,
-                    // so we need to take reference to `local` and move the reference.
+                    // so we need to take a reference to `local` and move the reference.
                     async move {
                         // this spawned subtask will continue running after the scoped task
                         // finished, but `scope!` will wait until this task completes.
                         scope.spawn(async {
                             delay_for(Duration::from_millis(500)).await;
                             println!("spanwed task is done: {}", local);
+                        });
+
+                        let danger = String::from("dangerous");
+                        scope.spawn(async {
+                            delay_for(Duration::from_millis(400)).await;
+                            println!("dangerous task is done: {}", danger);
                         });
 
                         delay_for(Duration::from_millis(100)).await;
