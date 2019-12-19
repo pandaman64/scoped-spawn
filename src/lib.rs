@@ -53,7 +53,8 @@ impl<'env> Scope<'env> {
     }
 }
 
-pub async fn scope<'env, Func, Fut, R>(handle: tokio::runtime::Handle, func: Func) -> R
+#[doc(hidden)]
+pub async fn scope_impl<'env, Func, Fut, R>(handle: tokio::runtime::Handle, func: Func) -> R
 where
     Func: FnOnce(Scope<'env>) -> Fut,
     Fut: Future<Output = R> + Send + 'env,
@@ -61,17 +62,28 @@ where
 {
     let wg = WaitGroup::new();
     let scope = Scope::<'env> {
-        handle: handle.clone(),
+        handle,
         wait_group: wg.clone(),
         _marker: PhantomData,
     };
 
-    let result = func(scope.clone()).await;
+    // the following TODOs needs access to untyped JoinHandles to cancel/await the spawned subtasks.
 
-    drop(scope.wait_group);
+    // TODO: `func` and the returned future can panic during the execution.
+    // In that case, we need to cancel all the spawned subtasks forcibly.
+    let result = func(scope).await;
+
+    // TODO: instead of blocking the thread, we should await the spawned subtasks.
     wg.wait();
 
     result
+}
+
+#[macro_export]
+macro_rules! scope {
+    ($handle:expr, $func:expr) => {{
+        crate::scope_impl($handle, $func).await
+    }};
 }
 
 #[cfg(test)]
@@ -88,23 +100,29 @@ mod test {
         rt.block_on(async {
             {
                 let local = String::from("hello_world");
-                let local = &local;
 
-                let mut f = Box::pin(scope(handle, |scope| {
+                scope!(handle, |scope| {
+                    let local = &local;
+
+                    // TODO: removing this `move` result in an error,
+                    // so we need to take reference to `local` and move the reference.
                     async move {
+                        // this spawned subtask will continue running after the scoped task
+                        // finished, but `scope!` will wait until this task completes.
                         scope.spawn(async {
                             delay_for(Duration::from_millis(500)).await;
                             println!("spanwed task is done: {}", local);
                         });
+
                         delay_for(Duration::from_millis(100)).await;
-                        println!("main task is done: {}", local);
+                        println!("scoped task is done: {}", local);
                     }
-                }));
-                println!("{:?}", futures::poll!(f.as_mut()));
+                });
+
                 delay_for(Duration::from_millis(110)).await;
-                std::mem::forget(f);
                 println!("local can be used here: {}", local);
             }
+
             println!("local is freed");
             delay_for(Duration::from_millis(600)).await;
         });
