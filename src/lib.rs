@@ -53,14 +53,12 @@ impl<'env> Scope<'env> {
     }
 }
 
-pub fn scope<'env, Func, Fut, R>(func: Func) -> R
+pub fn scope<'env, Func, Fut, R>(rt: &mut tokio::runtime::Runtime, func: Func) -> R
 where
     Func: FnOnce(Scope<'env>) -> Fut,
     Fut: Future<Output = R> + Send + 'env,
     R: Send + 'env,
 {
-    let mut rt = tokio::runtime::Runtime::new().unwrap();
-
     let wg = WaitGroup::new();
     let scope = Scope::<'env> {
         handle: rt.handle().clone(),
@@ -82,17 +80,20 @@ mod test {
     fn test_scoped() {
         use super::scope;
         use std::time::Duration;
+        use tokio::time::delay_for;
+
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
 
         {
             let local = "hello_world";
 
-            scope(|scope| {
+            scope(&mut rt, |scope| {
                 async move {
                     scope.spawn(async {
-                        tokio::time::delay_for(Duration::from_millis(200)).await;
+                        delay_for(Duration::from_millis(200)).await;
                         println!("spanwed task is done: {}", local);
                     });
-                    tokio::time::delay_for(Duration::from_millis(100)).await;
+                    delay_for(Duration::from_millis(100)).await;
                     println!("main task is done: {}", local);
                 }
             });
