@@ -12,4 +12,4 @@ pin-project = "0.4.6"
 
 [dependencies.tokio]
 version = "0.2.5"
-features = ["rt-core", "rt-threaded", "blocking", "sync", "time"]
+features = ["rt-core", "rt-threaded", "blocking", "sync", "time", "macros"]

@@ -53,7 +53,7 @@ impl<'env> Scope<'env> {
     }
 }
 
-pub fn scope<'env, Func, Fut, R>(rt: &mut tokio::runtime::Runtime, func: Func) -> R
+pub async fn scope<'env, Func, Fut, R>(handle: tokio::runtime::Handle, func: Func) -> R
 where
     Func: FnOnce(Scope<'env>) -> Fut,
     Fut: Future<Output = R> + Send + 'env,
@@ -61,12 +61,12 @@ where
 {
     let wg = WaitGroup::new();
     let scope = Scope::<'env> {
-        handle: rt.handle().clone(),
+        handle: handle.clone(),
         wait_group: wg.clone(),
         _marker: PhantomData,
     };
 
-    let result = rt.block_on(func(scope.clone()));
+    let result = func(scope.clone()).await;
 
     drop(scope.wait_group);
     wg.wait();
@@ -83,11 +83,12 @@ mod test {
         use tokio::time::delay_for;
 
         let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let handle = rt.handle().clone();
 
-        {
+        rt.block_on(async {
             let local = "hello_world";
 
-            scope(&mut rt, |scope| {
+            scope(handle, |scope| {
                 async move {
                     scope.spawn(async {
                         delay_for(Duration::from_millis(200)).await;
@@ -96,9 +97,10 @@ mod test {
                     delay_for(Duration::from_millis(100)).await;
                     println!("main task is done: {}", local);
                 }
-            });
+            })
+            .await;
 
             println!("local can be used here: {}", local);
-        }
+        });
     }
 }
