@@ -56,7 +56,7 @@ impl<'env> Scope<'env> {
 
 // TODO: if `Func` takes a reference to the scope, `scope.spawn` will generate a cryptic error
 #[doc(hidden)]
-pub async fn scope_impl<'env, Func, Fut, R>(handle: tokio::runtime::Handle, func: Func) -> R
+pub async unsafe fn scope_impl<'env, Func, Fut, R>(handle: tokio::runtime::Handle, func: Func) -> R
 where
     Func: FnOnce(Scope<'env>) -> Fut,
     Fut: Future<Output = R> + Send,
@@ -85,7 +85,7 @@ where
 #[macro_export]
 macro_rules! scope {
     ($handle:expr, $func:expr) => {{
-        crate::scope_impl($handle, $func).await
+        unsafe { crate::scope_impl($handle, $func) }.await
     }};
 }
 
