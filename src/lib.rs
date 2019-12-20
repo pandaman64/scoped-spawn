@@ -1,15 +1,15 @@
-use crossbeam::sync::WaitGroup;
 use pin_project::pin_project;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::mem::transmute;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct Scope<'env> {
     handle: tokio::runtime::Handle,
-    wait_group: WaitGroup,
+    chan: mpsc::Sender<()>,
     _marker: PhantomData<&'env mut &'env ()>,
 }
 
@@ -31,16 +31,17 @@ impl<'env, R> Future for ScopedJoinHandle<'env, R> {
 impl<'env> Scope<'env> {
     pub fn spawn<'scope, F, R>(&'scope self, fut: F) -> ScopedJoinHandle<'scope, R>
     where
-        F: Future<Output = R> + Send + 'scope,
+        F: Future<Output = R> + Send + 'env,
         R: Send + 'static, // TODO: weaken to 'env
     {
-        let wg = self.wait_group.clone();
-        let future_env: Pin<Box<dyn Future<Output = R> + Send + 'scope>> = Box::pin(async move {
-            let _wg = wg;
+        let chan = self.chan.clone();
+        let future_env: Pin<Box<dyn Future<Output = R> + Send + 'env>> = Box::pin(async move {
+            // the cloned channel gets dropped at the end of the future
+            let _chan = chan;
             fut.await
         });
 
-        // SAFETY: scoped API ensures the spawned future will not outlive the parent scope
+        // SAFETY: scoped API ensures the spawned tasks will not outlive the parent scope
         let future_static: Pin<Box<dyn Future<Output = R> + Send + 'static>> =
             unsafe { transmute(future_env) };
 
@@ -53,28 +54,30 @@ impl<'env> Scope<'env> {
     }
 }
 
+// TODO: if `Func` takes a reference to the scope, `scope.spawn` will generate a cryptic error
 #[doc(hidden)]
 pub async fn scope_impl<'env, Func, Fut, R>(handle: tokio::runtime::Handle, func: Func) -> R
 where
     Func: FnOnce(Scope<'env>) -> Fut,
-    Fut: Future<Output = R> + Send + 'env,
-    R: Send + 'env,
+    Fut: Future<Output = R> + Send,
+    R: Send,
 {
-    let wg = WaitGroup::new();
+    // we won't send data through this channel, so reserve the minimal buffer (buffer size must be
+    // greater than 0).
+    let (tx, mut rx) = mpsc::channel(1);
     let scope = Scope::<'env> {
         handle,
-        wait_group: wg.clone(),
+        chan: tx,
         _marker: PhantomData,
     };
 
-    // the following TODOs needs access to untyped JoinHandles to cancel/await the spawned subtasks.
-
     // TODO: `func` and the returned future can panic during the execution.
-    // In that case, we need to cancel all the spawned subtasks forcibly.
+    // In that case, we need to cancel all the spawned subtasks forcibly, but we cannot cancel
+    // spawned tasks from the outside of tokio.
     let result = func(scope).await;
 
-    // TODO: instead of blocking the thread, we should await the spawned subtasks.
-    wg.wait();
+    // yield the control until all spawned task finish(drop).
+    assert!(rx.recv().await.is_none());
 
     result
 }
@@ -88,36 +91,44 @@ macro_rules! scope {
 
 #[cfg(test)]
 mod test {
+    use super::*;
+    use std::time::Duration;
+    use tokio::time::delay_for;
+
     #[test]
     fn test_scoped() {
-        use super::scope;
-        use std::time::Duration;
-        use tokio::time::delay_for;
-
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         let handle = rt.handle().clone();
 
         rt.block_on(async {
             {
-                let local = String::from("hello_world");
+                let local = String::from("hello world");
                 let local = &local;
 
                 scope!(handle, |scope| {
-                    // TODO: removing this `move` result in an error,
-                    // so we need to take a reference to `local` and move the reference.
+                    // TODO: without this `move`, we get a compilation error. why?
                     async move {
                         // this spawned subtask will continue running after the scoped task
                         // finished, but `scope!` will wait until this task completes.
-                        scope.spawn(async {
+                        scope.spawn(async move {
                             delay_for(Duration::from_millis(500)).await;
                             println!("spanwed task is done: {}", local);
                         });
 
-                        let danger = String::from("dangerous");
+                        // since spawned tasks can outlive the scoped task, they cannot have
+                        // references to the scoped task's stack
+                        /*
+                        let evil = String::from("may dangle");
                         scope.spawn(async {
-                            delay_for(Duration::from_millis(400)).await;
-                            println!("dangerous task is done: {}", danger);
+                            delay_for(Duration::from_millis(200)).await;
+                            println!("spanwed task cannot access evil: {}", evil);
                         });
+                        */
+
+                        let handle = scope.spawn(async {
+                            println!("another spawned task");
+                        });
+                        handle.await.unwrap(); // you can await the returned handle
 
                         delay_for(Duration::from_millis(100)).await;
                         println!("scoped task is done: {}", local);
