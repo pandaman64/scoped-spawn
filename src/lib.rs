@@ -48,7 +48,7 @@ impl<'env> Scope<'env> {
 
         let task_env: Pin<Box<dyn Future<Output = Result<R, Aborted>> + Send + 'env>> =
             Box::pin(async move {
-                // the cloned channel gets dropped at the end of the future
+                // the cloned channel gets dropped at the end of the task
                 let _chan = chan;
 
                 abortable.await
@@ -84,12 +84,12 @@ impl Drop for AbortOnDrop {
     }
 }
 
-// TODO: if `Func` takes a reference to the scope, `scope.spawn` will generate a cryptic error
+// TODO: if `F` takes a reference to the scope, `scope.spawn` will generate a cryptic error
 #[doc(hidden)]
-pub async unsafe fn scope_impl<'env, Func, Fut, R>(handle: tokio::runtime::Handle, func: Func) -> R
+pub async unsafe fn scope_impl<'env, F, T, R>(handle: tokio::runtime::Handle, f: F) -> R
 where
-    Func: FnOnce(Scope<'env>) -> Fut,
-    Fut: Future<Output = R> + Send,
+    F: FnOnce(Scope<'env>) -> T,
+    T: Future<Output = R> + Send,
     R: Send,
 {
     let mut _abort_on_drop = AbortOnDrop::default();
@@ -104,12 +104,10 @@ where
         _marker: PhantomData,
     };
 
-    // TODO: `func` and the returned future can panic during the execution.
-    // In that case, we need to cancel all the spawned subtasks forcibly, but we cannot cancel
-    // spawned tasks from the outside of tokio.
-    let result = func(scope).await;
+    // TODO: verify that `AbortOnDrop` correctly handles drop and panic.
+    let result = f(scope).await;
 
-    // yield the control until all spawned task finish(drop).
+    // yield the control until all spawned tasks finish(drop).
     assert!(rx.recv().await.is_none());
 
     // no need to abort tasks anymore
