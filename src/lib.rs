@@ -8,10 +8,12 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
+enum Void {}
+
 #[derive(Clone)]
 pub struct Scope<'env> {
     handle: tokio::runtime::Handle,
-    chan: mpsc::Sender<()>,
+    chan: mpsc::Sender<Void>,
     abort_handles: Arc<Mutex<Vec<AbortHandle>>>,
     _marker: PhantomData<&'env mut &'env ()>,
 }
